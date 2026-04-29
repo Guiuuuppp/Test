@@ -26,8 +26,8 @@ quick_summary() {
     echo "=== PF debug level ===";       pfctl -x
     echo "=== Hardening sysctls ===";    sysctl \
         net.inet.tcp.blackhole net.inet.udp.blackhole \
-        net.inet.ip.randomid net.inet.icmp.dropredirect \
-        net.inet.tcp.dropsynfin net.inet.ip.redirect \
+        net.inet.ip.random_id net.inet.icmp.drop_redirect \
+        net.inet.tcp.drop_synfin net.inet.ip.redirect \
         net.inet.tcp.syncookies
     echo "=== CPU mitigations ===";      dmesg | \
         grep -iE 'spectre|meltdown|pti|ibrs|retbleed|srso' | tail -10
@@ -71,27 +71,32 @@ tail -f /var/log/filter/latest.log              # [AUDIT]
 ###############################################################################
 # 3. KERNEL / NETWORK HARDENING SYSCTLS                             [AUDIT/SET]
 ###############################################################################
-# OPNsense 26.1 / FreeBSD 14.x sysctl names use no underscores in the leaf
-# (e.g. randomid, dropsynfin, dropredirect, bmcastecho, maskrepl).
+# IMPORTANT: the OPNsense Tunables GUI strips underscores from display
+# names for compactness, but the ACTUAL FreeBSD sysctl OIDs (and the names
+# stored in /conf/config.xml) use underscores. Use the underscored form
+# below or `sysctl` will return "unknown oid".
+# To self-discover real names on this box:
+#   sysctl -a | grep -iE 'random.*id|drop.*synfin|see.*other|user.*open'
 
 # [AUDIT] dump current values
 sysctl \
     net.inet.tcp.blackhole          \
     net.inet.udp.blackhole          \
     net.inet.tcp.syncookies         \
-    net.inet.tcp.dropsynfin         \
-    net.inet.ip.randomid            \
+    net.inet.tcp.drop_synfin        \
+    net.inet.ip.random_id           \
     net.inet.ip.redirect            \
     net.inet6.ip6.redirect          \
-    net.inet.icmp.dropredirect      \
+    net.inet.icmp.drop_redirect     \
+    net.inet.icmp.log_redirect      \
     net.inet.icmp.bmcastecho        \
     net.inet.icmp.maskrepl          \
     net.inet.tcp.icmp_may_rst       \
     net.inet6.icmp6.nodeinfo        \
-    net.inet.ip.acceptsourceroute   \
+    net.inet.ip.accept_sourceroute  \
     net.inet.ip.sourceroute         \
     net.inet6.ip6.forwarding        \
-    net.link.tap.useropen           \
+    net.link.tap.user_open          \
     net.inet.ip.portrange.first     \
     security.bsd.see_other_uids     \
     security.bsd.see_other_gids     \
@@ -105,9 +110,9 @@ sysctl hw.ibrs_active hw.ibrs_disable vm.pmap.pti hw.pti_enabled 2>/dev/null
 # [SET] runtime hardening (persist via GUI Tunables, see section 18)
 sysctl net.inet.tcp.blackhole=2                 # silently drop closed TCP
 sysctl net.inet.udp.blackhole=1                 # silently drop closed UDP
-sysctl net.inet.ip.randomid=1                   # randomize IP id
-sysctl net.inet.icmp.dropredirect=1             # ignore ICMP redirects
-sysctl net.inet.tcp.dropsynfin=1                # drop SYN+FIN
+sysctl net.inet.ip.random_id=1                  # randomize IP id
+sysctl net.inet.icmp.drop_redirect=1            # ignore ICMP redirects
+sysctl net.inet.tcp.drop_synfin=1               # drop SYN+FIN
 sysctl net.inet.ip.redirect=0                   # do not send ICMP redirects
 sysctl net.inet6.ip6.redirect=0                 # same for v6
 sysctl net.inet.tcp.syncookies=1                # SYN flood protection
@@ -322,32 +327,34 @@ pfctl -e                                        # re-enable PF
 ###############################################################################
 # 18. TUNABLES PERSISTENCE TEMPLATE (for GUI: System -> Tunables)
 ###############################################################################
-# FreeBSD 14.x naming -- add each as a Tunable so it survives reboot:
+# Use the actual FreeBSD sysctl OID names (with underscores). The OPNsense
+# Tunables list view collapses underscores for display, but storage and the
+# `sysctl` command both use the underscored form.
 #
 #   net.inet.tcp.blackhole          = 2
 #   net.inet.udp.blackhole          = 1
 #   net.inet.tcp.syncookies         = 1
-#   net.inet.tcp.dropsynfin         = 1
-#   net.inet.ip.randomid            = 1
+#   net.inet.tcp.drop_synfin        = 1
+#   net.inet.ip.random_id           = 1
 #   net.inet.ip.redirect            = 0
 #   net.inet6.ip6.redirect          = 0
-#   net.inet.icmp.dropredirect      = 1
-#   net.inet.icmp.logredirect       = 0
+#   net.inet.icmp.drop_redirect     = 1
+#   net.inet.icmp.log_redirect      = 0
 #   net.inet.icmp.bmcastecho        = 0
 #   net.inet.icmp.maskrepl          = 0
 #   net.inet.tcp.icmp_may_rst       = 0
 #   net.inet6.icmp6.nodeinfo        = 0
-#   net.inet.ip.acceptsourceroute   = 0
+#   net.inet.ip.accept_sourceroute  = 0
 #   net.inet.ip.sourceroute         = 0
 #   net.inet.ip.portrange.first     = 10000
-#   net.link.tap.useropen           = 0   (only if no VPN client needs it)
+#   net.link.tap.user_open          = 0   (only if no VPN client needs it)
 #   security.bsd.see_other_uids     = 0
 #   security.bsd.see_other_gids     = 0
 #   kern.coredump                   = 0
 #   kern.randompid                  = 1
 #   kern.random.fortuna.minpoolsize = 128
-#   hw.syscons.kbdreboot            = 0
-#   net.link.bridge.pfilmember      = 1
+#   hw.syscons.kbd_reboot           = 0
+#   net.link.bridge.pfil_member     = 1
 #
 # REMOVE these if present without justification:
 #   dev.netmap.bufnum                  (only needed by Zenarmor)
