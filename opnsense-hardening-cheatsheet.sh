@@ -37,6 +37,8 @@ quick_summary() {
     echo "=== Listening v4 ===";         sockstat -4l
     echo "=== SSH cfg ===";              sshd -T 2>/dev/null | \
         grep -Ei 'permitroot|passwordauth|port |pubkey|listenaddress'
+    echo "=== System log tail ===";      tail -n 20 \
+        /var/log/system/system_$(date +%Y%m%d).log 2>/dev/null
     echo "=== Updates ===";              opnsense-update -c
     echo "=== pkg audit ===";            pkg audit -F | tail -5
 }
@@ -64,8 +66,10 @@ pfctl -x urgent                                 # [SET]   minimal output
 #   System -> Settings -> Logging  (firewall log level)
 
 # Watch logs to confirm the spam stopped
-clog -f /var/log/system/latest.log | grep pf_   # [AUDIT]
-tail -f /var/log/filter/latest.log              # [AUDIT]
+# Modern OPNsense (23.x+) uses syslog-ng plain text files, not clog circular logs.
+LD=$(date +%Y%m%d)
+tail -f /var/log/system/system_${LD}.log | grep pf_   # [AUDIT]
+tail -f /var/log/filter/filter_${LD}.log              # [AUDIT]
 
 
 ###############################################################################
@@ -259,14 +263,22 @@ stat /conf/config.xml
 ###############################################################################
 # 13. LOGS WORTH SKIMMING                                           [AUDIT]
 ###############################################################################
-clog -f /var/log/filter/latest.log              # firewall log (live)
-clog   /var/log/system/latest.log  | tail -100
-clog   /var/log/audit/latest.log   | tail -50
-clog   /var/log/configd/latest.log | tail -50
-clog   /var/log/resolver/latest.log | tail -50  # Unbound
-ls -lh /var/log/                                # all log categories
+# OPNsense 23.x+ uses syslog-ng plain-text files (no `clog`). Filenames are
+# /var/log/<category>/<category>_YYYYMMDD.log with older days .gz-compressed.
+LD=$(date +%Y%m%d)
+tail -f /var/log/filter/filter_${LD}.log              # firewall log (live)
+tail -n 100 /var/log/system/system_${LD}.log
+tail -n  50 /var/log/audit/audit_${LD}.log
+tail -n  50 /var/log/configd/configd_${LD}.log
+tail -n  50 /var/log/resolver/resolver_${LD}.log      # Unbound
+ls -lh /var/log/                                       # all log categories
+
 # Top talkers in firewall log
-clog /var/log/filter/latest.log | awk '{print $NF}' | sort | uniq -c | sort -rn | head
+awk '{print $NF}' /var/log/filter/filter_${LD}.log | sort | uniq -c | sort -rn | head
+
+# Search across all retained days (mix of .log and .log.gz)
+zgrep -h 'pattern' /var/log/system/system_*.log.gz 2>/dev/null
+ grep -h 'pattern' /var/log/system/system_*.log    2>/dev/null
 
 
 ###############################################################################
@@ -392,9 +404,11 @@ service -e | grep -iE 'sensei|zenarmor'
 pgrep -lf 'sensei|zenarmor|nctd'
 
 # Audit trail for stale/unexpected Tunables (who added them, when)
+LD=$(date +%Y%m%d)
 grep -B1 -A4 -E 'vtnet.csumdisable|netmap.bufnum|ibrsdisable|fw.dynmax|ixl.enableheadwriteback|portrange.first' /conf/config.xml
-clog /var/log/audit/latest.log   | grep -iE 'sysctl|tunable|netmap|vtnet|ibrs'
-clog /var/log/configd/latest.log | grep -iE 'sysctl|tunable'
+grep  -iE 'sysctl|tunable|netmap|vtnet|ibrs' /var/log/audit/audit_${LD}.log
+grep  -iE 'sysctl|tunable'                   /var/log/configd/configd_${LD}.log
+zgrep -iE 'sysctl|tunable' /var/log/audit/audit_*.log.gz 2>/dev/null | tail -50
 ls -lt /conf/backup/ | head -20
 
 
@@ -422,8 +436,9 @@ sockstat -4l
 sockstat -6l
 
 # Logs clean
-clog /var/log/system/latest.log | tail -50
-clog /var/log/audit/latest.log  | tail -20
+LD=$(date +%Y%m%d)
+tail -n 50 /var/log/system/system_${LD}.log
+tail -n 20 /var/log/audit/audit_${LD}.log
 
 
 ###############################################################################
