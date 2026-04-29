@@ -22,12 +22,15 @@
 quick_summary() {
     echo "=== Hostname / version ===";   hostname; opnsense-version
     echo "=== Uptime / load ===";        uptime
-    echo "=== PF debug level ===";       sysctl net.pf.debug
+    echo "=== Bare metal vs VM ===";     sysctl kern.vm_guest
+    echo "=== PF debug level ===";       pfctl -x
     echo "=== Hardening sysctls ===";    sysctl \
         net.inet.tcp.blackhole net.inet.udp.blackhole \
-        net.inet.ip.random_id net.inet.icmp.drop_redirect \
-        net.inet.tcp.drop_synfin net.inet.ip.redirect \
+        net.inet.ip.randomid net.inet.icmp.dropredirect \
+        net.inet.tcp.dropsynfin net.inet.ip.redirect \
         net.inet.tcp.syncookies
+    echo "=== CPU mitigations ===";      dmesg | \
+        grep -iE 'spectre|meltdown|pti|ibrs|retbleed|srso' | tail -10
     echo "=== Scrub rules ===";          pfctl -sr | grep -i scrub
     echo "=== PF info ===";              pfctl -s info | head -20
     echo "=== State count ===";          pfctl -s state | wc -l
@@ -51,15 +54,14 @@ pfctl -s Anchors                                # any nested anchors?
 ###############################################################################
 # 2. PF DEBUG / LOGGING LEVEL                                       [AUDIT/SET]
 ###############################################################################
-# Levels: 0 none, 1 urgent, 2 notice, 3 misc, 4 loud, 5 noisy
-sysctl net.pf.debug                             # [AUDIT]
-pfctl -x                                        # [AUDIT] symbolic form
+# NOTE: net.pf.debug was REMOVED in FreeBSD 14.x. Use pfctl -x only.
+# Levels:  none | urgent | misc | loud
+pfctl -x                                        # [AUDIT] current level
+pfctl -x none                                   # [SET]   silence runtime
+pfctl -x urgent                                 # [SET]   minimal output
 
-sysctl net.pf.debug=1                           # [SET] runtime
-pfctl -x urgent                                 # [SET] equivalent
-
-# [PERSIST] add via GUI Tunables OR:
-#   echo 'net.pf.debug=1' >> /etc/sysctl.conf
+# [PERSIST] no sysctl tunable on 14.x -- persist via GUI:
+#   System -> Settings -> Logging  (firewall log level)
 
 # Watch logs to confirm the spam stopped
 clog -f /var/log/system/latest.log | grep pf_   # [AUDIT]
@@ -69,28 +71,43 @@ tail -f /var/log/filter/latest.log              # [AUDIT]
 ###############################################################################
 # 3. KERNEL / NETWORK HARDENING SYSCTLS                             [AUDIT/SET]
 ###############################################################################
+# OPNsense 26.1 / FreeBSD 14.x sysctl names use no underscores in the leaf
+# (e.g. randomid, dropsynfin, dropredirect, bmcastecho, maskrepl).
+
 # [AUDIT] dump current values
 sysctl \
-    net.inet.tcp.blackhole \
-    net.inet.udp.blackhole \
-    net.inet.ip.random_id \
-    net.inet.icmp.drop_redirect \
-    net.inet.tcp.drop_synfin \
-    net.inet.ip.redirect \
-    net.inet.tcp.syncookies \
-    net.inet6.icmp6.nodeinfo \
-    net.inet6.ip6.redirect \
-    net.inet.icmp.bmcastecho \
-    net.inet.icmp.maskrepl \
-    net.inet.tcp.icmp_may_rst \
-    net.pf.debug
+    net.inet.tcp.blackhole          \
+    net.inet.udp.blackhole          \
+    net.inet.tcp.syncookies         \
+    net.inet.tcp.dropsynfin         \
+    net.inet.ip.randomid            \
+    net.inet.ip.redirect            \
+    net.inet6.ip6.redirect          \
+    net.inet.icmp.dropredirect      \
+    net.inet.icmp.bmcastecho        \
+    net.inet.icmp.maskrepl          \
+    net.inet.tcp.icmp_may_rst       \
+    net.inet6.icmp6.nodeinfo        \
+    net.inet.ip.acceptsourceroute   \
+    net.inet.ip.sourceroute         \
+    net.inet6.ip6.forwarding        \
+    net.link.tap.useropen           \
+    net.inet.ip.portrange.first     \
+    security.bsd.see_other_uids     \
+    security.bsd.see_other_gids     \
+    kern.coredump                   \
+    kern.randompid
 
-# [SET] runtime hardening (persist in GUI Tunables)
+# [AUDIT] CPU side-channel mitigations actually applied
+dmesg | grep -iE 'spectre|meltdown|mds|l1tf|pti|ibrs|stibp|ssbd|retbleed|srso'
+sysctl hw.ibrs_active hw.ibrs_disable vm.pmap.pti hw.pti_enabled 2>/dev/null
+
+# [SET] runtime hardening (persist via GUI Tunables, see section 18)
 sysctl net.inet.tcp.blackhole=2                 # silently drop closed TCP
 sysctl net.inet.udp.blackhole=1                 # silently drop closed UDP
-sysctl net.inet.ip.random_id=1                  # randomize IP id
-sysctl net.inet.icmp.drop_redirect=1            # ignore ICMP redirects
-sysctl net.inet.tcp.drop_synfin=1               # drop SYN+FIN
+sysctl net.inet.ip.randomid=1                   # randomize IP id
+sysctl net.inet.icmp.dropredirect=1             # ignore ICMP redirects
+sysctl net.inet.tcp.dropsynfin=1                # drop SYN+FIN
 sysctl net.inet.ip.redirect=0                   # do not send ICMP redirects
 sysctl net.inet6.ip6.redirect=0                 # same for v6
 sysctl net.inet.tcp.syncookies=1                # SYN flood protection
@@ -305,23 +322,105 @@ pfctl -e                                        # re-enable PF
 ###############################################################################
 # 18. TUNABLES PERSISTENCE TEMPLATE (for GUI: System -> Tunables)
 ###############################################################################
-# Add each as a Tunable so it survives reboot/regeneration:
+# FreeBSD 14.x naming -- add each as a Tunable so it survives reboot:
 #
-#   net.pf.debug                  = 1
-#   net.inet.tcp.blackhole        = 2
-#   net.inet.udp.blackhole        = 1
-#   net.inet.ip.random_id         = 1
-#   net.inet.icmp.drop_redirect   = 1
-#   net.inet.tcp.drop_synfin      = 1
-#   net.inet.ip.redirect          = 0
-#   net.inet6.ip6.redirect        = 0
-#   net.inet.tcp.syncookies       = 1
-#   net.inet.icmp.bmcastecho      = 0
-#   net.inet.icmp.maskrepl        = 0
+#   net.inet.tcp.blackhole          = 2
+#   net.inet.udp.blackhole          = 1
+#   net.inet.tcp.syncookies         = 1
+#   net.inet.tcp.dropsynfin         = 1
+#   net.inet.ip.randomid            = 1
+#   net.inet.ip.redirect            = 0
+#   net.inet6.ip6.redirect          = 0
+#   net.inet.icmp.dropredirect      = 1
+#   net.inet.icmp.logredirect       = 0
+#   net.inet.icmp.bmcastecho        = 0
+#   net.inet.icmp.maskrepl          = 0
+#   net.inet.tcp.icmp_may_rst       = 0
+#   net.inet6.icmp6.nodeinfo        = 0
+#   net.inet.ip.acceptsourceroute   = 0
+#   net.inet.ip.sourceroute         = 0
+#   net.inet.ip.portrange.first     = 10000
+#   net.link.tap.useropen           = 0   (only if no VPN client needs it)
+#   security.bsd.see_other_uids     = 0
+#   security.bsd.see_other_gids     = 0
+#   kern.coredump                   = 0
+#   kern.randompid                  = 1
+#   kern.random.fortuna.minpoolsize = 128
+#   hw.syscons.kbdreboot            = 0
+#   net.link.bridge.pfilmember      = 1
+#
+# REMOVE these if present without justification:
+#   dev.netmap.bufnum                  (only needed by Zenarmor)
+#   hw.vtnet.csumdisable               (only relevant inside a VM)
+#   vm.numa.disabled                   (VM-template leftover)
+#   hw.ixl.enableheadwriteback         (only for Intel XL710/X710 NICs)
+#   net.inet.ip.fw.dynmax              (only for traffic shaping)
+#   hw.ibrsdisable                     (turns OFF Spectre V2 mitigation)
+#
+# PF debug level: NOT a sysctl on 14.x. Use `pfctl -x none|urgent` (runtime)
+# and lower the firewall log level in System -> Settings -> Logging.
 
 
 ###############################################################################
-# 19. SECURITY HOUSEKEEPING REMINDERS
+# 19. ENVIRONMENT SANITY (bare metal vs VM, leftover plugins)        [AUDIT]
+###############################################################################
+# Confirm what hardware/hypervisor you're really on
+uname -a
+opnsense-version
+sysctl kern.vm_guest                              # "none" = bare metal
+kenv smbios.bios.vendor 2>/dev/null
+kenv smbios.system.product 2>/dev/null
+dmidecode -s system-manufacturer 2>/dev/null
+dmidecode -s system-product-name 2>/dev/null
+sysctl hw.model hw.ncpu hw.physmem
+pciconf -lv | grep -A1 -E 'class=0x020000'        # NIC list
+ifconfig -l                                       # interface list
+camcontrol devlist                                # storage
+
+# Confirm Zenarmor / Sensei is fully gone (any output = leftover)
+pkg info | grep -iE 'sensei|zenarmor'
+ls /usr/local/sensei /usr/local/zenarmor 2>/dev/null
+ls /usr/local/etc/rc.d/ | grep -iE 'sensei|zenarmor'
+service -e | grep -iE 'sensei|zenarmor'
+pgrep -lf 'sensei|zenarmor|nctd'
+
+# Audit trail for stale/unexpected Tunables (who added them, when)
+grep -B1 -A4 -E 'vtnet.csumdisable|netmap.bufnum|ibrsdisable|fw.dynmax|ixl.enableheadwriteback|portrange.first' /conf/config.xml
+clog /var/log/audit/latest.log   | grep -iE 'sysctl|tunable|netmap|vtnet|ibrs'
+clog /var/log/configd/latest.log | grep -iE 'sysctl|tunable'
+ls -lt /conf/backup/ | head -20
+
+
+###############################################################################
+# 20. POST-CHANGE VERIFICATION                                      [AUDIT]
+###############################################################################
+# Stale tunables removed?
+sysctl -a 2>/dev/null | grep -E 'netmap.bufnum|vtnet.csumdisable|ibrsdisable'
+
+# Mitigations now applied?
+dmesg | grep -iE 'spectre|meltdown|pti|ibrs|retbleed|srso'
+sysctl hw.ibrs_active vm.pmap.pti 2>/dev/null
+
+# Hardening still in effect?
+sysctl net.inet.tcp.blackhole net.inet.udp.blackhole \
+       net.inet.ip.randomid net.inet.tcp.syncookies \
+       net.inet.tcp.dropsynfin net.inet.ip.portrange.first
+
+# PF still scrubbing, log level low
+pfctl -sr | grep -i scrub
+pfctl -x
+
+# No unexpected listeners
+sockstat -4l
+sockstat -6l
+
+# Logs clean
+clog /var/log/system/latest.log | tail -50
+clog /var/log/audit/latest.log  | tail -20
+
+
+###############################################################################
+# 21. SECURITY HOUSEKEEPING REMINDERS
 ###############################################################################
 # - Default-deny inbound on WAN (verify -- no any/any sneaks in).
 # - Block bogons + RFC1918 on WAN; enable monthly bogons update.
